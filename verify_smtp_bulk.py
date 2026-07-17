@@ -298,7 +298,8 @@ def main():
 
             parts = [p.strip() for p in raw_emails.split(";")]
             verified_parts = []
-            all_valid = True
+            any_valid = False
+            any_invalid = False
             has_catch_all = False
             best_method = "no_email"
 
@@ -311,25 +312,36 @@ def main():
                     verified_parts.append(part)
                     continue
                 status = str(vr.get("status", "unknown"))
+                method = str(vr.get("method", "unknown"))
                 if status == "valid":
                     verified_parts.append(part)
+                    any_valid = True
                     if vr.get("catch_all"):
                         has_catch_all = True
-                    best_method = vr.get("method", best_method)
+                    best_method = method
                 elif status == "invalid":
-                    all_valid = False
+                    any_invalid = True
                 else:
                     verified_parts.append(part)
+                    if best_method == "no_email":
+                        best_method = method
 
             if not verified_parts:
                 row["verify_status"] = "all_invalid"
                 row["verify_code"] = ""
                 row["verify_method"] = "smtp_rejected"
                 row["catch_all"] = str(has_catch_all).lower()
-            else:
-                row["verify_status"] = "valid" if all_valid else "partial_valid"
+            elif any_valid:
+                row["verify_status"] = "valid" if not any_invalid else "partial_valid"
                 row["verify_code"] = ""
-                row["verify_method"] = f"catch_all" if has_catch_all else str(best_method)
+                row["verify_method"] = "catch_all" if has_catch_all else str(best_method)
+                row["catch_all"] = str(has_catch_all).lower()
+                if verified_parts:
+                    row[email_field] = "; ".join(verified_parts)
+            else:
+                row["verify_status"] = "unknown"
+                row["verify_code"] = ""
+                row["verify_method"] = str(best_method)
                 row["catch_all"] = str(has_catch_all).lower()
                 if verified_parts:
                     row[email_field] = "; ".join(verified_parts)
