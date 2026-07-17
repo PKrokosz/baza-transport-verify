@@ -1,0 +1,48 @@
+name: Verify Emails (SMTP)
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_workers:
+        description: "Number of parallel workers"
+        required: false
+        default: "25"
+      input_file:
+        description: "Input CSV filename"
+        required: false
+        default: "transport_final_merged_v12.csv"
+      output_file:
+        description: "Output CSV filename"
+        required: false
+        default: "verified_results.csv"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install dnspython
+
+      - name: Verify emails
+        run: |
+          python verify_smtp_bulk.py \
+            "${{ github.event.inputs.input_file || 'transport_final_merged_v12.csv' }}" \
+            "${{ github.event.inputs.output_file || 'verified_results.csv' }}" \
+            "${{ github.event.inputs.max_workers || '25' }}"
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-emails
+          path: verified_results.csv
+          retention-days: 7
