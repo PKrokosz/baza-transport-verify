@@ -1,0 +1,45 @@
+name: Infer Domains + MX Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  infer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install dnspython
+
+      - name: Run domain inference
+        run: python infer_domains.py
+
+      - name: Upload inferred emails
+        uses: actions/upload-artifact@v4
+        with:
+          name: inferred-emails
+          path: inferred_emails_for_smtp.csv
+          retention-days: 7
+
+      - name: Upload MX cache
+        uses: actions/upload-artifact@v4
+        with:
+          name: mx-cache
+          path: mx_inference_cache.csv
+          retention-days: 30
+
+      - name: Commit MX cache back
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mx_inference_cache.csv
+          git diff --cached --quiet || git commit -m "Update MX inference cache [skip ci]" && git push
