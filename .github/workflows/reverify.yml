@@ -1,0 +1,31 @@
+name: Re-Verify Unknown (Slow/Retry)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reverify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install dnspython
+
+      - name: Re-verify unknown emails (slower, 10 workers)
+        run: python verify_smtp_bulk.py unknown_to_reverify.csv reverified_unknown.csv 10
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: reverified-unknown
+          path: reverified_unknown.csv
+          retention-days: 7
