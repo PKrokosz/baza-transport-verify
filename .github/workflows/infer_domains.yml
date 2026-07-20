@@ -1,4 +1,4 @@
-name: Infer Domains + MX Check
+name: Infer + Verify Pipeline
 
 on:
   workflow_dispatch:
@@ -9,8 +9,9 @@ permissions:
 jobs:
   infer:
     runs-on: ubuntu-latest
-    timeout-minutes: 350
-
+    timeout-minutes: 60
+    outputs:
+      shard_count: "6"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,6 +27,13 @@ jobs:
       - name: Run domain inference
         run: python infer_domains.py
 
+      - name: Commit MX cache back
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add mx_inference_cache.csv
+          git diff --cached --quiet || git commit -m "Update MX inference cache [skip ci]" && git push
+
       - name: Upload inferred emails
         uses: actions/upload-artifact@v4
         with:
@@ -40,9 +48,132 @@ jobs:
           path: mx_inference_cache.csv
           retention-days: 30
 
-      - name: Commit MX cache back
+  split:
+    needs: infer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download inferred emails
+        uses: actions/download-artifact@v4
+        with:
+          name: inferred-emails
+
+      - name: Split into 6 shards
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add mx_inference_cache.csv
-          git diff --cached --quiet || git commit -m "Update MX inference cache [skip ci]" && git push
+          SHARDS=6
+          python -c "
+          import csv
+          with open('inferred_emails_for_smtp.csv', 'r', encoding='utf-8-sig') as f:
+              reader = csv.DictReader(f)
+              fields = reader.fieldnames
+              rows = list(reader)
+          total = len(rows)
+          size = (total + $SHARDS - 1) // $SHARDS
+          for i in range($SHARDS):
+              start = i * size
+              end = min(start + size, total)
+              shard = rows[start:end]
+              with open(f'shard_{i}.csv', 'w', encoding='utf-8-sig', newline='') as out:
+                  w = csv.DictWriter(out, fieldnames=fields)
+                  w.writeheader()
+                  w.writerows(shard)
+              print(f'shard_{i}.csv: {len(shard)} rows')
+          "
+
+      - name: Upload shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: shards
+          path: shard_*.csv
+          retention-days: 7
+
+  verify:
+    needs: split
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install dnspython
+
+      - name: Download shards
+        uses: actions/download-artifact@v4
+        with:
+          name: shards
+
+      - name: Download MX cache
+        uses: actions/download-artifact@v4
+        with:
+          name: mx-cache
+
+      - name: Verify shard ${{ matrix.shard }}
+        run: python verify_smtp_bulk.py shard_${{ matrix.shard }}.csv verified_shard_${{ matrix.shard }}.csv 25
+
+      - name: Upload verified shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-shard-${{ matrix.shard }}
+          path: verified_shard_${{ matrix.shard }}.csv
+          retention-days: 7
+
+  merge:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download all verified shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: verified-shard-*
+          merge-multiple: true
+
+      - name: Merge shards
+        run: |
+          python -c "
+          import csv, glob, sys
+          files = sorted(glob.glob('verified_shard_*.csv'))
+          if not files:
+              print('No files to merge')
+              sys.exit(1)
+          fields = None
+          merged = 0
+          with open('verified_inferred_emails.csv', 'w', encoding='utf-8-sig', newline='') as out:
+              for path in files:
+                  with open(path, 'r', encoding='utf-8-sig', newline='') as f:
+                      reader = csv.DictReader(f)
+                      if fields is None:
+                          fields = reader.fieldnames
+                          writer = csv.DictWriter(out, fieldnames=fields)
+                          writer.writeheader()
+                      writer.writerows(reader)
+                      merged += sum(1 for _ in open(path, encoding='utf-8-sig')) - 1
+                      print(f'  {path}: merged')
+          print(f'Total: {merged} rows -> verified_inferred_emails.csv')
+          "
+
+      - name: Upload final verified results
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-inferred-emails
+          path: verified_inferred_emails.csv
+          retention-days: 30
