@@ -1,0 +1,276 @@
+name: Scrape + Verify Round 2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install requests beautifulsoup4 lxml dnspython
+
+      - name: Scrape websites for missing emails
+        run: python scrape_websites_round2.py
+
+      - name: Merge scraped emails into BAZA + generate patterns
+        run: python merge_scraped_round2.py
+
+      - name: Commit changes back
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add BAZA_FINAL_v1.csv scraped_emails_round2.csv pattern_candidates_round2.csv mx_inference_cache.csv
+          git diff --cached --quiet || git commit -m "Round 2: scraped emails + pattern candidates [skip ci]" && git push
+
+      - name: Upload scraped results
+        uses: actions/upload-artifact@v4
+        with:
+          name: scraped-round2
+          path: scraped_emails_round2.csv
+          retention-days: 7
+
+      - name: Upload pattern candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: patterns-round2
+          path: pattern_candidates_round2.csv
+          retention-days: 7
+
+  prepare-verify:
+    needs: scrape
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      shard_count: "4"
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download scraped results
+        uses: actions/download-artifact@v4
+        with:
+          name: scraped-round2
+
+      - name: Download pattern candidates
+        uses: actions/download-artifact@v4
+        with:
+          name: patterns-round2
+
+      - name: Prepare all emails for SMTP verification
+        run: |
+          python -c "
+          import csv, glob
+
+          all_emails = []
+
+          # 1. From scraped results: extract all found emails
+          if os.path.exists('scraped_emails_round2.csv'):
+              with open('scraped_emails_round2.csv', 'r', encoding='utf-8-sig') as f:
+                  reader = csv.DictReader(f)
+                  for row in reader:
+                      domain = row.get('domain', '').strip()
+                      for email in row.get('emails', '').split(';'):
+                          email = email.strip()
+                          if email and '@' in email:
+                              all_emails.append({
+                                  'company_name': row.get('company_name', ''),
+                                  'clean_name': '',
+                                  'domain': domain,
+                                  'email': email,
+                                  'city': '',
+                                  'phone': '',
+                                  'verify_status': '',
+                                  'verify_code': '',
+                                  'verify_method': '',
+                                  'catch_all': ''
+                              })
+
+          # 2. From pattern candidates: generate emails for new domains
+          if os.path.exists('pattern_candidates_round2.csv'):
+              patterns = ['info', 'kontakt', 'office', 'service', 'vertrieb',
+                          'support', 'mail', 'post', 'sales', 'anfrage',
+                          'buchhaltung', 'spedition', 'transport', 'logistik',
+                          'disposition', 'verkauf']
+              domains = set()
+              with open('pattern_candidates_round2.csv', 'r', encoding='utf-8-sig') as f:
+                  reader = csv.DictReader(f)
+                  for row in reader:
+                      domains.add(row.get('domain', '').strip())
+
+              for domain in sorted(domains):
+                  if not domain:
+                      continue
+                  for prefix in patterns:
+                      all_emails.append({
+                          'company_name': '',
+                          'clean_name': '',
+                          'domain': domain,
+                          'email': f'{prefix}@{domain}',
+                          'city': '',
+                          'phone': '',
+                          'verify_status': '',
+                          'verify_code': '',
+                          'verify_method': '',
+                          'catch_all': ''
+                      })
+
+          # Deduplicate emails
+          seen = set()
+          unique = []
+          for e in all_emails:
+              key = e['email'].lower()
+              if key not in seen:
+                  seen.add(key)
+                  unique.append(e)
+
+          print(f'Total emails for verification: {len(unique)}')
+
+          # Write combined file
+          fields = ['company_name', 'clean_name', 'domain', 'email', 'city', 'phone',
+                    'verify_status', 'verify_code', 'verify_method', 'catch_all']
+          with open('emails_to_verify_round2.csv', 'w', encoding='utf-8-sig', newline='') as f:
+              writer = csv.DictWriter(f, fieldnames=fields)
+              writer.writeheader()
+              writer.writerows(unique)
+
+          # Split into 4 shards
+          total = len(unique)
+          shard_count = 4
+          size = (total + shard_count - 1) // shard_count
+          for i in range(shard_count):
+              start = i * size
+              end = min(start + size, total)
+              shard = unique[start:end]
+              with open(f'shard_r2_{i}.csv', 'w', encoding='utf-8-sig', newline='') as out:
+                  w = csv.DictWriter(out, fieldnames=fields)
+                  w.writeheader()
+                  w.writerows(shard)
+              print(f'  shard_r2_{i}.csv: {len(shard)} rows')
+          "
+
+      - name: Upload combined email list
+        uses: actions/upload-artifact@v4
+        with:
+          name: emails-to-verify-r2
+          path: emails_to_verify_round2.csv
+          retention-days: 7
+
+      - name: Upload shards
+        uses: actions/upload-artifact@v4
+        with:
+          name: shards-r2
+          path: shard_r2_*.csv
+          retention-days: 7
+
+  verify:
+    needs: prepare-verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install dnspython
+
+      - name: Download shard
+        uses: actions/download-artifact@v4
+        with:
+          name: shards-r2
+
+      - name: Download MX cache
+        uses: actions/download-artifact@v4
+        with:
+          name: mx-cache
+        continue-on-error: true
+
+      - name: Verify shard ${{ matrix.shard }}
+        run: python verify_smtp_bulk.py shard_r2_${{ matrix.shard }}.csv verified_r2_${{ matrix.shard }}.csv 10
+
+      - name: Upload verified shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-r2-${{ matrix.shard }}
+          path: verified_r2_${{ matrix.shard }}.csv
+          retention-days: 7
+
+  merge-results:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download all verified shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: verified-r2-*
+          merge-multiple: true
+
+      - name: Merge verified shards
+        run: |
+          python -c "
+          import csv, glob, sys
+          files = sorted(glob.glob('verified_r2_*.csv'))
+          if not files:
+              print('No files to merge')
+              sys.exit(1)
+          fields = None
+          total = 0
+          with open('verified_emails_round2.csv', 'w', encoding='utf-8-sig', newline='') as out:
+              for path in files:
+                  with open(path, 'r', encoding='utf-8-sig') as f:
+                      reader = csv.DictReader(f)
+                      if fields is None:
+                          fields = reader.fieldnames
+                          writer = csv.DictWriter(out, fieldnames=fields)
+                          writer.writeheader()
+                      rows = list(reader)
+                      writer.writerows(rows)
+                      total += len(rows)
+                      print(f'  {path}: {len(rows)} rows')
+          print(f'Total: {total} rows -> verified_emails_round2.csv')
+          "
+
+      - name: Upload final results
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-emails-r2
+          path: verified_emails_round2.csv
+          retention-days: 30
+
+      - name: Commit verified results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add verified_emails_round2.csv
+          git diff --cached --quiet || git commit -m "Round 2: SMTP verification results [skip ci]" && git push
