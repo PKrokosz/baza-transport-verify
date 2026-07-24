@@ -45,8 +45,8 @@ def get_mx_host(domain: str) -> Optional[str]:
 async def smtp_check(email: str) -> tuple:
     domain = email.split("@", 1)[1].lower()
 
-    # Step 1: MX record lookup
-    mx_host = get_mx_host(domain)
+    # Step 1: MX record lookup (async wrapper — dns.resolver is sync/blocking)
+    mx_host = await asyncio.to_thread(get_mx_host, domain)
     if not mx_host:
         return "invalid", f"No MX records for {domain}"
 
