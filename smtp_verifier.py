@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 smtp_verifier.py — Async email verification (MX + SMTP).
+FIX: Use dnspython instead of aiodns (API compatibility).
 FIX: Handle multi-email fields (semicolon-separated).
 FIX: Port 587 STARTTLS (port 25 blocked on GH Actions).
 """
@@ -9,7 +10,7 @@ import logging
 import sys
 from typing import Dict, Optional, List
 
-import aiodns
+import dns.resolver
 import aiosmtplib
 
 CONCURRENT_SMTP = 100
@@ -28,19 +29,26 @@ def split_emails(raw: str) -> List[str]:
     return [e for e in parts if "@" in e and "." in e.split("@")[1] and len(e) < 254]
 
 
-async def smtp_check(resolver: aiodns.DNSResolver, email: str) -> tuple:
+def get_mx_host(domain: str) -> Optional[str]:
+    """Get MX host for domain using dnspython."""
+    try:
+        answers = dns.resolver.resolve(domain, "MX", lifetime=DNS_TIMEOUT)
+        if not answers:
+            return None
+        mx_records = sorted(answers, key=lambda r: r.preference)
+        return str(mx_records[0].exchange).rstrip(".")
+    except Exception as exc:
+        log.debug(f"DNS MX lookup failed for {domain}: {exc}")
+        return None
+
+
+async def smtp_check(email: str) -> tuple:
     domain = email.split("@", 1)[1].lower()
 
-    # Step 1: MX record lookup (query_dns avoids aiodns Channel bug)
-    try:
-        result = await resolver.query_dns(domain, "MX")
-        mx_records = [r for r in result.answer if r.type == 15]
-        if not mx_records:
-            return "invalid", "No MX records"
-        best = min(mx_records, key=lambda r: r.data.priority)
-        mx_host = str(best.data.exchange).rstrip(".")
-    except Exception as exc:
-        return "unknown", f"DNS error: {exc}"
+    # Step 1: MX record lookup
+    mx_host = get_mx_host(domain)
+    if not mx_host:
+        return "invalid", f"No MX records for {domain}"
 
     # Step 2: Try SMTP on port 587 (STARTTLS)
     smtp = None
@@ -72,12 +80,11 @@ async def smtp_check(resolver: aiodns.DNSResolver, email: str) -> tuple:
 
 async def verify_one_email(
     sem: asyncio.Semaphore,
-    resolver: aiodns.DNSResolver,
     company: str,
     email: str,
 ) -> Dict[str, Optional[str]]:
     async with sem:
-        status, message = await smtp_check(resolver, email)
+        status, message = await smtp_check(email)
         return {
             "company_name": company,
             "email": email,
@@ -97,7 +104,6 @@ async def verify_all(csv_path: str, out_path: str) -> None:
         raw_email = row.get("email", "")
         emails = split_emails(raw_email)
         if emails:
-            # Pick the first valid email per company (best match)
             all_tasks.append({"company_name": company, "email": emails[0]})
 
     # Deduplicate by email
@@ -111,12 +117,8 @@ async def verify_all(csv_path: str, out_path: str) -> None:
 
     print(f"[INFO] {len(unique_tasks)} unique emails to verify (from {len(df)} rows)")
 
-    resolver = aiodns.DNSResolver()
-    resolver.timeout = DNS_TIMEOUT
-    resolver.lifetime = DNS_TIMEOUT
-
     sem = asyncio.Semaphore(CONCURRENT_SMTP)
-    tasks = [verify_one_email(sem, resolver, t["company_name"], t["email"]) for t in unique_tasks]
+    tasks = [verify_one_email(sem, t["company_name"], t["email"]) for t in unique_tasks]
     results = await asyncio.gather(*tasks)
 
     valid = sum(1 for r in results if r["smtp_status"] == "valid")
