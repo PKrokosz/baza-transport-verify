@@ -1,0 +1,42 @@
+name: Transport Email Pipeline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - 'BAZA_FINAL_v1.csv'
+
+jobs:
+  scrape-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      NVIDIA_BUILD_API_KEY: ${{ secrets.NVIDIA_BUILD_API_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pipeline
+        run: python main.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: enriched-data
+          path: |
+            artifacts/BAZA_FINAL_v2.csv
+            artifacts/scraped_emails.csv
+            artifacts/smtp_results.csv

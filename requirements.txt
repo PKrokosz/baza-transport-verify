@@ -1,0 +1,7 @@
+aiohttp==3.9.5
+aiosmtplib==3.0.1
+aiodns==3.2.0
+beautifulsoup4==4.12.3
+lxml==5.2.2
+pandas==2.2.2
+tenacity==9.0.0
