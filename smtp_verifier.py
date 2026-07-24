@@ -73,14 +73,14 @@ async def verify_one(
     row: Dict[str, str],
 ) -> Dict[str, Optional[str]]:
     async with sem:
-        nip = row.get("nip", "")
+        company = row.get("company_name", "")
         email = row.get("email", "").strip()
         if not email:
-            return {"nip": nip, "email": "", "smtp_status": "unknown", "smtp_message": "empty"}
+            return {"company_name": company, "email": "", "smtp_status": "unknown", "smtp_message": "empty"}
 
         status, message = await smtp_check(resolver, email)
         return {
-            "nip": nip,
+            "company_name": company,
             "email": email,
             "smtp_status": status,
             "smtp_message": message,

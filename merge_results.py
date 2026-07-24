@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 merge_results.py — Merge scraped & verified data back into source CSV.
-FIXES: deduplication before merge to prevent Cartesian products.
+FIXES: uses company_name as key (German database, no NIP).
 """
 import pandas as pd
 import sys
@@ -12,29 +12,29 @@ def main(original_path: str, scraped_path: str, smtp_path: str, output_path: str
     scraped = pd.read_csv(scraped_path, dtype=str).fillna("")
     smtp = pd.read_csv(smtp_path, dtype=str).fillna("")
 
-    # 1. Deduplicate scraped emails (keep first non-empty per nip)
+    # 1. Deduplicate scraped emails (keep first non-empty per company_name)
     scraped_dedup = scraped[scraped["scraped_email"].str.strip() != ""].drop_duplicates(
-        subset=["nip"], keep="first"
+        subset=["company_name"], keep="first"
     )
-    scraped_map = scraped_dedup.set_index("nip")["scraped_email"]
+    scraped_map = scraped_dedup.set_index("company_name")["scraped_email"]
 
     def fill_email(row):
-        if not row["email"] and row["nip"] in scraped_map.index:
-            val = scraped_map[row["nip"]]
+        if not row["email"] and row["company_name"] in scraped_map.index:
+            val = scraped_map[row["company_name"]]
             if val and val.strip():
                 return val
         return row["email"]
 
     orig["email"] = orig.apply(fill_email, axis=1)
 
-    # 2. Deduplicate SMTP results (keep first per nip)
-    smtp_dedup = smtp.drop_duplicates(subset=["nip"], keep="first")
-    smtp_map = smtp_dedup.set_index("nip")[["smtp_status", "smtp_message"]]
+    # 2. Deduplicate SMTP results (keep first per company_name)
+    smtp_dedup = smtp.drop_duplicates(subset=["company_name"], keep="first")
+    smtp_map = smtp_dedup.set_index("company_name")[["smtp_status", "smtp_message"]]
 
     def get_status(row):
-        nip = row["nip"]
-        if nip in smtp_map.index:
-            return pd.Series(smtp_map.loc[nip])
+        company = row["company_name"]
+        if company in smtp_map.index:
+            return pd.Series(smtp_map.loc[company])
         return pd.Series({"smtp_status": "not_checked", "smtp_message": ""})
 
     status_df = orig.apply(get_status, axis=1)

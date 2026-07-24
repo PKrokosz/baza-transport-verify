@@ -161,10 +161,10 @@ async def process_one(
     row: Dict[str, str],
 ) -> Dict[str, Optional[str]]:
     async with sem:
-        nip = row.get("nip", "")
+        company = row.get("company_name", "")
         website = row.get("website", "").strip()
         if not website:
-            return {"nip": nip, "website": "", "scraped_email": None}
+            return {"company_name": company, "website": "", "scraped_email": None}
         if not website.startswith(("http://", "https://")):
             website = "https://" + website
 
@@ -180,14 +180,14 @@ async def process_one(
                 html = await fetch(session, url)
                 emails = extract_emails_from_html(html)
                 if emails:
-                    return {"nip": nip, "website": website, "scraped_email": emails[0]}
+                    return {"company_name": company, "website": website, "scraped_email": emails[0]}
             except Exception as e:
                 if is_rate_limited(e):
                     log.warning(f"Rate limited on {url}, skipping rest of domain")
                     break
                 continue
 
-        return {"nip": nip, "website": website, "scraped_email": None}
+        return {"company_name": company, "website": website, "scraped_email": None}
 
 
 async def scrape_all(csv_path: str, out_path: str) -> None:
