@@ -31,12 +31,14 @@ def split_emails(raw: str) -> List[str]:
 async def smtp_check(resolver: aiodns.DNSResolver, email: str) -> tuple:
     domain = email.split("@", 1)[1].lower()
 
-    # Step 1: MX record lookup
+    # Step 1: MX record lookup (query_dns avoids aiodns Channel bug)
     try:
-        mx_records = await resolver.query(domain, "MX")
+        result = await resolver.query_dns(domain, "MX")
+        mx_records = [r for r in result.answer if r.type == 15]
         if not mx_records:
             return "invalid", "No MX records"
-        mx_host = str(sorted(mx_records, key=lambda r: r.priority)[0].host)
+        best = min(mx_records, key=lambda r: r.data.priority)
+        mx_host = str(best.data.exchange).rstrip(".")
     except Exception as exc:
         return "unknown", f"DNS error: {exc}"
 
